@@ -49,7 +49,7 @@ def make_dataset(txtnames, datadir, class_to_idx):
 class DTD(datasets.ImageFolder):
     def __init__(self, root, transform=None, target_transform=None, train=True):
 
-        classes, class_to_idx = find_classes(root)
+        classes, class_to_idx = find_classes(os.path.join(root, "images"))
 
         if train:
             filename = [os.path.join(root, "labels/train1.txt"),
