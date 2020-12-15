@@ -146,9 +146,9 @@ class RUN(torch.nn.Module):
     def forward(self, features):
         B, D, W, H = features.shape
         F = torch.transpose(features.view(B, D, W * H), 1, 2)  # B x N x D
-        v0 = torch.randn(B, D, 1, requires_grad=False, device=F.device)
+        v = torch.randn(B, D, 1, requires_grad=False, device=F.device)
         for i in range(self.it_k):
-            v = torch.bmm(F, v0)  # Fv_k
+            v = torch.bmm(F, v)  # Fv_k
             v = torch.bmm(torch.transpose(F, 1, 2), v)  # F^TFv_k-1
 
         v = torch.nn.functional.normalize(v, dim=1)
