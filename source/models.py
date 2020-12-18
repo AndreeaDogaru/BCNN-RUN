@@ -12,7 +12,7 @@ torch.cuda.manual_seed_all(41)
 
 class BCNN(torch.nn.Module):
 
-    def __init__(self, freeze_features):
+    def __init__(self, freeze_features, fc_features=512 ** 2):
         torch.nn.Module.__init__(self)
         self.freeze_features = freeze_features
 
@@ -20,7 +20,7 @@ class BCNN(torch.nn.Module):
         self.features = torch.nn.Sequential(*list(
             self.features.children())[:-1])
 
-        self.fc = torch.nn.Linear(512 ** 2, 200)
+        self.fc = torch.nn.Linear(fc_features, 200)
 
         if freeze_features:
             for param in self.features.parameters():
@@ -96,8 +96,8 @@ class matrix_sqrt(Function):
 
 class IBCNN(BCNN):
 
-    def __init__(self, freeze_features):
-        super().__init__(freeze_features)
+    def __init__(self, freeze_features, fc_features=512 ** 2):
+        super().__init__(freeze_features, fc_features)
         self.matrix_sqrt = matrix_sqrt.apply
 
     def forward(self, X):
@@ -120,8 +120,8 @@ class IBCNN(BCNN):
 
 
 class BCNNwRUN(BCNN):
-    def __init__(self, freeze_features, it_k=2, eta=1.0):
-        super().__init__(freeze_features)
+    def __init__(self, freeze_features, fc_features=512 ** 2, it_k=2, eta=1.0):
+        super().__init__(freeze_features, fc_features)
         self.run = RUN(it_k, eta)
 
     def forward(self, X):
@@ -148,7 +148,8 @@ class RUN(torch.nn.Module):
     def forward(self, features):
         B, D, W, H = features.shape
         F = torch.transpose(features.view(B, D, W * H), 1, 2)  # B x N x D
-        v = torch.randn(B, D, 1, requires_grad=False, device=F.device)
+        v = torch.rand(B, D, 1, requires_grad=False, device=F.device)
+        # v = torch.randn(B, D, 1, requires_grad=False, device=F.device)
         for i in range(self.it_k):
             v = torch.bmm(F, v)  # Fv_k
             v = torch.bmm(torch.transpose(F, 1, 2), v)  # F^TFv_k-1
@@ -158,3 +159,47 @@ class RUN(torch.nn.Module):
 
         Fk = F - self.eta * torch.bmm(torch.bmm(F, v), vt)  # F - eta*Fvv^T
         return Fk
+
+
+# Inspiration: https://gist.github.com/vadimkantorov/d9b56f9b85f1f4ce59ffecf893a1581a
+class CompactBilinearPooling(torch.nn.Module):
+    def __init__(self, input_dim1, input_dim2, output_dim, sum_pool=True):
+        super(CompactBilinearPooling, self).__init__()
+        self.output_dim = output_dim
+        self.sum_pool = sum_pool
+        generate_sketch_matrix = lambda rand_h, rand_s, input_dim, output_dim: torch.sparse.FloatTensor(
+            torch.stack([torch.arange(input_dim, out=torch.LongTensor()), rand_h.long()]), rand_s.float(),
+            [input_dim, output_dim]).to_dense()
+        self.sketch1 = torch.nn.Parameter(generate_sketch_matrix(torch.randint(output_dim, size=(input_dim1,)),
+                                                                 2 * torch.randint(2, size=(input_dim1,)) - 1,
+                                                                 input_dim1, output_dim), requires_grad=False)
+        self.sketch2 = torch.nn.Parameter(generate_sketch_matrix(torch.randint(output_dim, size=(input_dim2,)),
+                                                                 2 * torch.randint(2, size=(input_dim2,)) - 1,
+                                                                 input_dim2, output_dim), requires_grad=False)
+
+    def forward(self, x):
+        fft1 = torch.rfft(x.permute(0, 2, 3, 1).matmul(self.sketch1), signal_ndim=1)
+        fft2 = torch.rfft(x.permute(0, 2, 3, 1).matmul(self.sketch2), signal_ndim=1)
+        fft_product = torch.stack([fft1[..., 0] * fft2[..., 0] - fft1[..., 1] * fft2[..., 1],
+                                   fft1[..., 0] * fft2[..., 1] + fft1[..., 1] * fft2[..., 0]], dim=-1)
+        cbp = torch.irfft(fft_product, signal_ndim=1, signal_sizes=(self.output_dim,)) * self.output_dim
+        X = cbp.sum(dim=[1, 2])  # if self.sum_pool else cbp.permute(0, 3, 1, 2)
+        X = X.sign().mul(torch.sqrt(X.abs() + 1e-5)).view(x.size(0), -1)
+        X = torch.nn.functional.normalize(X)
+        return X
+
+
+class BCNNwRUNwCBP(BCNNwRUN):
+    def __init__(self, freeze_features, fc_features=10000, it_k=2, eta=1.0):
+        super().__init__(freeze_features, fc_features, it_k, eta)
+        self.cbp = CompactBilinearPooling(512, 512, fc_features)
+
+    def forward(self, X):
+        features = self.features(X)
+        with profiler.record_function("bcnn_normalization"):
+            Fk = self.run(features)
+            out = torch.transpose(Fk, 1, 2).view_as(features)
+            out = self.cbp(out)
+        out = self.fc(out)
+
+        return out
