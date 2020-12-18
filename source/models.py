@@ -4,7 +4,7 @@
 
 import torch
 import torchvision
-from torch.autograd import Function
+from torch.autograd import Function, profiler
 
 torch.manual_seed(41)
 torch.cuda.manual_seed_all(41)
@@ -37,14 +37,15 @@ class BCNN(torch.nn.Module):
 
     def forward(self, X):
         X = self.features(X)
-        X = X.view(-1, 512, 28 ** 2)
-        X = torch.bmm(X, torch.transpose(X, 1, 2)) / (28 ** 2)  # Bilinear
+        with profiler.record_function("bcnn_normalization"):
+            X = X.view(-1, 512, 28 ** 2)
+            X = torch.bmm(X, torch.transpose(X, 1, 2)) / (28 ** 2)  # Bilinear
 
-        X = X.view(-1, 512 ** 2)
+            X = X.view(-1, 512 ** 2)
 
-        # BCNN Normalization
-        X = X.sign().mul(torch.sqrt(X.abs() + 1e-5))
-        X = torch.nn.functional.normalize(X)
+            # BCNN Normalization
+            X = X.sign().mul(torch.sqrt(X.abs() + 1e-5))
+            X = torch.nn.functional.normalize(X)
         X = self.fc(X)
 
         return X
@@ -101,18 +102,18 @@ class IBCNN(BCNN):
 
     def forward(self, X):
         X = self.features(X)
-        X = X.view(-1, 512, 28 ** 2)
-        X = torch.bmm(X, torch.transpose(X, 1, 2)) / (28 ** 2)  # Bilinear
+        with profiler.record_function("bcnn_normalization"):
+            X = X.view(-1, 512, 28 ** 2)
+            X = torch.bmm(X, torch.transpose(X, 1, 2)) / (28 ** 2)  # Bilinear
 
-        # I-BCNN Normalization
-        X = self.matrix_sqrt(X)
+            # I-BCNN Normalization
+            X = self.matrix_sqrt(X)
 
-        X = X.view(-1, 512 ** 2)
+            X = X.view(-1, 512 ** 2)
 
-        # BCNN Normalization
-        X = X.sign().mul(torch.sqrt(X.abs() + 1e-5))
-        X = torch.nn.functional.normalize(X)
-
+            # BCNN Normalization
+            X = X.sign().mul(torch.sqrt(X.abs() + 1e-5))
+            X = torch.nn.functional.normalize(X)
         X = self.fc(X)
 
         return X
@@ -125,13 +126,14 @@ class BCNNwRUN(BCNN):
 
     def forward(self, X):
         features = self.features(X)
-        Fk = self.run(features)
+        with profiler.record_function("bcnn_normalization"):
+            Fk = self.run(features)
 
-        out = torch.bmm(torch.transpose(Fk, 1, 2), Fk) / (28 ** 2)
-        out = out.view(out.shape[0], -1)
+            out = torch.bmm(torch.transpose(Fk, 1, 2), Fk) / (28 ** 2)
+            out = out.view(out.shape[0], -1)
 
-        out = out.sign().mul(torch.sqrt(out.abs() + 1e-5))
-        out = torch.nn.functional.normalize(out)
+            out = out.sign().mul(torch.sqrt(out.abs() + 1e-5))
+            out = torch.nn.functional.normalize(out)
         out = self.fc(out)
 
         return out
